@@ -3,7 +3,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use rand::Rng;
+use rand::{rngs::StdRng, RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
 
 #[tokio::main]
@@ -28,14 +28,15 @@ async fn create_user(
     // as JSON into a `CreateUser` type
     Json(payload): Json<CreateUser>,
 ) -> (StatusCode, Json<User>) {
-    // TESTING CODE
-    let mut rng = rand::rng();
+    // This is cryptographically secure.
+    let mut rng = StdRng::from_os_rng();
 
     let user = User {
-        id: rng.random::<u64>(),
+        id: rng.next_u64(),
         // Json items can be accessed using
         // this dot syntax. -gw
         username: payload.username,
+        password: payload.password,
     };
 
     // this will be converted into a JSON response
@@ -44,10 +45,12 @@ async fn create_user(
 }
 
 // the input to our `create_user` handler
-// Wait... why do we define a struct as our input? -gw
+// Wait... why do we define a struct as our input?
+// Nevermind, this is fine :p -gw
 #[derive(Deserialize)]
 struct CreateUser {
     username: String,
+    password: String,
 }
 
 // the output to our `create_user` handler
@@ -55,4 +58,5 @@ struct CreateUser {
 struct User {
     id: u64,
     username: String,
+    password: String,
 }
