@@ -1,16 +1,23 @@
+use std::str::FromStr;
+
+use argon2::{
+    password_hash::{PasswordHashString, SaltString},
+    Argon2, PasswordHasher, PasswordVerifier,
+};
 use axum::{
     http::StatusCode,
     routing::{get, post},
     Json, Router,
 };
-use rand::{rngs::StdRng, RngCore, SeedableRng};
-use redis::Commands;
+use redis::{Commands, RedisResult};
 use serde::{Deserialize, Serialize};
-use std::fs;
 
 pub const PREFIX_LOG: &'static str = "[LOG]";
 pub const PREFIX_ERROR: &'static str = "[ERROR]";
 
+mod config;
+
+/*
 #[derive(Deserialize)]
 struct Config {
     utter_server: ServerConfig,
@@ -42,10 +49,11 @@ fn load_config(file_path: String) -> Config {
     let mut config: Config = toml::from_str(config_contents.as_str()).unwrap();
     config
 }
+*/
 
 #[tokio::main]
 async fn main() {
-    let config = load_config("./utter.server.config.toml".to_string());
+    //let config = load_config("./utter.server.config.toml".to_string());
     let app = Router::new()
         .route("/hello_world", get(hello_world))
         // `POST /users` goes to `create_user`
@@ -53,12 +61,7 @@ async fn main() {
 
     // run our app with hyper, listening globally on port 3000
     let listener = tokio::net::TcpListener::bind(
-        format!(
-            "{}:{}",
-            config.utter_server.ip.unwrap_or("0.0.0.0".to_string()),
-            config.utter_server.port.unwrap_or(3000)
-        )
-        .as_str(),
+        format!("{}:{}", config::SERVER_IP, config::SERVER_PORT).as_str(),
     )
     .await
     .unwrap();
@@ -75,25 +78,36 @@ async fn create_user(
     // as JSON into a `CreateUser` type
     Json(payload): Json<CreateUser>,
 ) -> (StatusCode, Json<User>) {
-    // This is cryptographically secure.
-    let mut rng = StdRng::from_os_rng();
+    // SPECIFICIALLY NEEDS rand_core=0.6.4 OsRng!
+    let salt = SaltString::generate(&mut rand_core::OsRng).as_salt();
+
+    // Following RustCrypto guidelines from
+    // https://rustcrypto.org/key-derivation/hashing-password.html
+    let argon2 = Argon2::default();
+    let hash = argon2
+        .hash_password(payload.password.as_str().as_bytes(), salt)
+        .unwrap();
+    Argon2::default()
+        .verify_password(
+            payload.password.as_str().as_bytes(),
+            &PasswordHashString::from_str(hash.to_string().as_str()),
+        )
+        .expect("msg");
 
     let user = User {
-        id: rng.next_u64(),
-        // Json items can be accessed using
-        // this dot syntax. -gw
         username: payload.username,
-        password: payload.password,
+        hash_str: hash.to_string(),
     };
 
-    let client = redis::Client::open("redis://127.0.0.1/").unwrap();
+    let client = redis::Client::open(config::REDIS_URL).unwrap();
     let mut con = client.get_connection().unwrap();
     // throw away the result, just make sure it does not fail
-    let _: () = con.set("my_key", 42).unwrap();
+    let user_exists = con.hexists("login", user.username);
+    let hres: RedisResult<isize> = con.hset_nx("login", user.username);
     // read back the key and return it.  Because the return value
     // from the function is a result for integer this will automatically
     // convert into one.
-    let _res: redis::RedisResult<isize> = con.get("my_key");
+    //let _res: redis::RedisResult<isize> = con.get("my_key");
 
     // this will be converted into a JSON response
     // with a status code of `201 Created`
@@ -112,7 +126,6 @@ struct CreateUser {
 // the output to our `create_user` handler
 #[derive(Serialize)]
 struct User {
-    id: u64,
     username: String,
-    password: String,
+    hash_str: String,
 }
