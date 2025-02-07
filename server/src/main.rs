@@ -76,8 +76,8 @@ async fn hello_world() -> &'static str {
 async fn create_user(
     // this argument tells axum to parse the request body
     // as JSON into a `CreateUser` type
-    Json(payload): Json<CreateUser>,
-) -> (StatusCode, Json<User>) {
+    Json(payload): Json<CreateUserInput>,
+) -> (StatusCode, Json<CreateUserOutput>) {
     // SPECIFICIALLY NEEDS rand_core=0.6.4 OsRng!
     let salt_str = SaltString::generate(&mut rand_core::OsRng);
     let salt: Salt = Salt::from(&salt_str);
@@ -88,21 +88,17 @@ async fn create_user(
     let hash = argon2
         .hash_password(payload.password.as_str().as_bytes(), salt)
         .unwrap();
-    let pass_string_hash = hash.to_string();
+    let hash_string = hash.to_string();
     Argon2::default()
         .verify_password(
             payload.password.as_str().as_bytes(),
-            &PasswordHash::parse(
-                pass_string_hash.as_str(),
-                argon2::password_hash::Encoding::B64,
-            )
-            .unwrap(),
+            &PasswordHash::parse(hash_string.as_str(), argon2::password_hash::Encoding::B64)
+                .unwrap(),
         )
         .expect(format!("{} Password hash did not verify", PREFIX_ERROR).as_str());
 
-    let user = User {
+    let user = CreateUserOutput {
         username: payload.username,
-        hash_str: hash.to_string(),
     };
 
     let client = redis::Client::open(config::REDIS_URL).unwrap();
@@ -112,8 +108,11 @@ async fn create_user(
     let user_exists: isize = user_exists_res.unwrap();
     match user_exists {
         0 => {
+            // CRITICAL TODO: Should add result checking for the NX
+            // operation to make sure that the same username didn't
+            // just get registered by another operation. -gw
             let _user_add_res: RedisResult<isize> =
-                con.hset_nx("login", &user.username, &user.hash_str);
+                con.hset_nx("login", &user.username, &hash_string);
             println!("{} Register request success!", PREFIX_LOG);
             return (StatusCode::CREATED, Json(user));
         }
@@ -132,17 +131,14 @@ async fn create_user(
 }
 
 // the input to our `create_user` handler
-// Wait... why do we define a struct as our input?
-// Nevermind, this is fine :p -gw
 #[derive(Deserialize)]
-struct CreateUser {
+struct CreateUserInput {
     username: String,
     password: String,
 }
 
 // the output to our `create_user` handler
 #[derive(Serialize)]
-struct User {
+struct CreateUserOutput {
     username: String,
-    hash_str: String,
 }
