@@ -1,8 +1,6 @@
-use std::str::FromStr;
-
 use argon2::{
-    password_hash::{PasswordHashString, SaltString},
-    Argon2, PasswordHasher, PasswordVerifier,
+    password_hash::{Salt, SaltString},
+    Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
 };
 use axum::{
     http::StatusCode,
@@ -73,13 +71,16 @@ async fn hello_world() -> &'static str {
     "Hello, World!"
 }
 
+// TODO: add actually decent error handling and recovery.
+/// Handles password hashing and username based registration.
 async fn create_user(
     // this argument tells axum to parse the request body
     // as JSON into a `CreateUser` type
     Json(payload): Json<CreateUser>,
 ) -> (StatusCode, Json<User>) {
     // SPECIFICIALLY NEEDS rand_core=0.6.4 OsRng!
-    let salt = SaltString::generate(&mut rand_core::OsRng).as_salt();
+    let salt_str = SaltString::generate(&mut rand_core::OsRng);
+    let salt: Salt = Salt::from(&salt_str);
 
     // Following RustCrypto guidelines from
     // https://rustcrypto.org/key-derivation/hashing-password.html
@@ -87,12 +88,17 @@ async fn create_user(
     let hash = argon2
         .hash_password(payload.password.as_str().as_bytes(), salt)
         .unwrap();
+    let pass_string_hash = hash.to_string();
     Argon2::default()
         .verify_password(
             payload.password.as_str().as_bytes(),
-            &PasswordHashString::from_str(hash.to_string().as_str()),
+            &PasswordHash::parse(
+                pass_string_hash.as_str(),
+                argon2::password_hash::Encoding::B64,
+            )
+            .unwrap(),
         )
-        .expect("msg");
+        .expect(format!("{} Password hash did not verify", PREFIX_ERROR).as_str());
 
     let user = User {
         username: payload.username,
@@ -102,16 +108,27 @@ async fn create_user(
     let client = redis::Client::open(config::REDIS_URL).unwrap();
     let mut con = client.get_connection().unwrap();
     // throw away the result, just make sure it does not fail
-    let user_exists = con.hexists("login", user.username);
-    let hres: RedisResult<isize> = con.hset_nx("login", user.username);
-    // read back the key and return it.  Because the return value
-    // from the function is a result for integer this will automatically
-    // convert into one.
-    //let _res: redis::RedisResult<isize> = con.get("my_key");
-
-    // this will be converted into a JSON response
-    // with a status code of `201 Created`
-    (StatusCode::CREATED, Json(user))
+    let user_exists_res: RedisResult<isize> = con.hexists("login", &user.username);
+    let user_exists: isize = user_exists_res.unwrap();
+    match user_exists {
+        0 => {
+            let _user_add_res: RedisResult<isize> =
+                con.hset_nx("login", &user.username, &user.hash_str);
+            println!("{} Register request success!", PREFIX_LOG);
+            return (StatusCode::CREATED, Json(user));
+        }
+        1 => {
+            println!("{} Register failure: User exists", PREFIX_ERROR);
+            return (StatusCode::CONFLICT, Json(user));
+        }
+        _ => {
+            println!(
+                "{} Register failure with RedisResult {}",
+                PREFIX_ERROR, user_exists
+            );
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(user));
+        }
+    }
 }
 
 // the input to our `create_user` handler
