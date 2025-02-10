@@ -4,6 +4,7 @@ use argon2::{
 };
 use axum::{
     http::StatusCode,
+    response::{Html, IntoResponse},
     routing::{get, post},
     Json, Router,
 };
@@ -20,7 +21,8 @@ async fn main() {
     let app = Router::new()
         .route("/hello_world", get(hello_world))
         // `POST /users` goes to `create_user`
-        .route("/users", post(create_user));
+        .route("/users", post(create_user))
+        .fallback(handler_404);
 
     // run our app with hyper, listening globally on port 3000
     let listener = tokio::net::TcpListener::bind(
@@ -34,6 +36,11 @@ async fn main() {
 // basic handler that responds with a static string
 async fn hello_world() -> &'static str {
     "Hello, World!"
+}
+
+/// 404 page handler.
+async fn handler_404() -> impl IntoResponse {
+    (StatusCode::NOT_FOUND, "Error 404: Nothing to see here!")
 }
 
 // TODO: add actually decent error handling and recovery.
