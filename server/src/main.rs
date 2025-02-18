@@ -15,6 +15,7 @@ pub const PREFIX_LOG: &'static str = "[LOG]";
 pub const PREFIX_ERROR: &'static str = "[ERROR]";
 
 mod config;
+mod util;
 
 #[tokio::main]
 async fn main() {
@@ -102,6 +103,13 @@ async fn create_user(
     }
 }
 
+/*
+async fn generate_token(
+    Json(payload): Json<UsernamePasswordInput>,
+) -> (StatusCode, Json<GenerateTokenOutput>) {
+}
+*/
+
 // the input to our `create_user` handler
 #[derive(Deserialize)]
 struct CreateUserInput {
@@ -113,4 +121,16 @@ struct CreateUserInput {
 #[derive(Serialize)]
 struct CreateUserOutput {
     username: String,
+}
+
+/// For anything that requires direct username and password auth.
+#[derive(Deserialize)]
+struct UsernamePasswordInput {
+    username: String,
+    password: String,
+}
+
+#[derive(Serialize)]
+struct GenerateTokenOutput {
+    token: String,
 }
