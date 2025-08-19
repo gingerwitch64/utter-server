@@ -1,19 +1,30 @@
+//use std::fs::{File, *};
+use std::collections::HashMap;
+use std::io::Write;
+use std::path::Path;
 use std::time::UNIX_EPOCH;
+use std::{fs, fs::File};
 
 use argon2::{
     password_hash::{Salt, SaltString},
     Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
 };
 use axum::{
-    http::StatusCode,
+    body::{Body, Bytes},
+    extract::{Multipart, Query},
+    http::{
+        header::{HeaderMap, AUTHORIZATION, CONTENT_TYPE},
+        StatusCode,
+    },
     response::{Html, IntoResponse},
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
-
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use mysql::{prelude::*, *};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 pub const PREFIX_LOG: &'static str = "[LOG]";
 pub const PREFIX_ERROR: &'static str = "[ERROR]";
@@ -68,6 +79,8 @@ async fn main() {
         // `POST /users` goes to `create_user`
         .route("/users", post(create_user))
         .route("/login", post(generate_token))
+        .route("/echo", post(echo))
+        .route("/upload/image", put(upload_image))
         .fallback(handler_404);
 
     // run our app with hyper, listening globally on port 3000
@@ -82,6 +95,11 @@ async fn main() {
 // basic handler that responds with a static string
 async fn hello_world() -> &'static str {
     "Hello, World!"
+}
+
+/// Echoes the body.
+async fn echo(body: Bytes) -> impl IntoResponse {
+    (StatusCode::OK, body)
 }
 
 /// 404 page handler.
@@ -229,22 +247,102 @@ async fn generate_token(Json(payload): Json<User>) -> (StatusCode, Json<FancyStr
     };
 
     // create the header
-    let header = jsonwebtoken::Header::default();
+    let header = Header::default();
 
     // create the encoding key using the secret string
-    let secret_key = jsonwebtoken::EncodingKey::from_secret(secret::JWT_SECRET);
+    let secret_key = EncodingKey::from_secret(secret::JWT_SECRET);
 
     // encode token
-    let res = jsonwebtoken::encode(&header, &c, &secret_key).unwrap();
+    let res = encode(&header, &c, &secret_key).unwrap();
 
     println!("{}", verify_token(res.clone()));
 
     return (StatusCode::OK, Json(FancyString::new(res)));
 }
 
+async fn upload_image(headers: HeaderMap, body: Bytes) -> impl IntoResponse {
+    if !headers.contains_key(AUTHORIZATION) {
+        if !verify_token(headers[AUTHORIZATION].to_str().unwrap().to_string()) {
+            return (StatusCode::UNAUTHORIZED, "Token is invalid.".to_string());
+        }
+    }
+    if body.len() > config::MAX_UPLOAD_SIZE {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "Payload too large. Max upload size is {} Bytes.",
+                config::MAX_UPLOAD_SIZE
+            ),
+        );
+    }
+    if !headers.contains_key(CONTENT_TYPE) {
+        return (StatusCode::BAD_REQUEST, "Missing Content-Type.".to_string());
+    }
+    let content_type_trim = headers[CONTENT_TYPE]
+        .to_str()
+        .unwrap()
+        .trim_start_matches("image/");
+    let file_extension = match content_type_trim {
+        "apng" | "avif" | "gif" | "jpeg" | "jpg" | "png" | "webp" => content_type_trim,
+        "svg+xml" => "svg",
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "Invalid Content-Type {}.",
+                    headers[CONTENT_TYPE].to_str().unwrap()
+                ),
+            )
+        }
+    };
+    let mut hasher = Sha256::new();
+    hasher.update(&body);
+    let file_hash_b64 = URL_SAFE_NO_PAD.encode(hasher.finalize());
+    let f_location = Path::new(config::UPLOAD_PATH)
+        .join("images")
+        .join(format!("{}.{}", file_hash_b64, file_extension));
+    if f_location.exists() {
+        return (StatusCode::CREATED, format!(""));
+    }
+    fs::create_dir_all(f_location.clone().parent().unwrap()).unwrap();
+    let mut file = File::create(f_location).unwrap();
+    file.write_all(&body).unwrap();
+
+    return (StatusCode::CREATED, format!(""));
+}
+
+/*
+pub async fn upload(mut multipart: Multipart) -> impl IntoResponse {
+    while let Some(field) = multipart.next_field().await.unwrap() {
+        let filename = if let Some(filename) = field.file_name() {
+            filename.to_string()
+        } else {
+            continue;
+        };
+
+        let body_with_io_error = field.map_err(|err| io::Error::new(io::ErrorKind::Other, err));
+
+        let body_reader = StreamReader::new(body_with_io_error);
+
+        futures::pin_mut!(body_reader);
+
+        //put_file(bucket, &filename, body_reader);
+
+        return (StatusCode::CREATED, "OK".to_string());
+    }
+
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Internal Server Error".to_string(),
+    )
+}
+*/
+
+/// Verifies a JWT token using the server's JWT secret. Will trim `Bearer` from any bearer token strings automatically.
+/// Returns true if the token is valid.
 fn verify_token(token: String) -> bool {
     let token_message = decode::<Claims>(
-        &token,
+        &token.trim_start_matches("Bearer "),
         &DecodingKey::from_secret(secret::JWT_SECRET),
         &Validation::new(Algorithm::HS256),
     );
