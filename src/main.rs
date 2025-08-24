@@ -21,9 +21,11 @@ use axum::{
     Json, Router,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use futures_util::stream::StreamExt;
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use mysql::{prelude::*, *};
 use serde::{Deserialize, Serialize};
+use serde_smile::Error;
 use sha2::{Digest, Sha256};
 
 pub const PREFIX_LOG: &'static str = "[LOG]";
@@ -44,6 +46,13 @@ impl User {
     fn new(username: String, password: String) -> Self {
         User { username, password }
     }
+}
+
+/// Because I strongly dislike multiform and want to try my own thing.
+#[derive(Serialize, Deserialize, Debug)]
+struct FileUpload {
+    name: String,
+    data: Vec<u8>,
 }
 
 /// Because we love using JSON for single-output use cases!
@@ -81,6 +90,7 @@ async fn main() {
         .route("/login", post(generate_token))
         .route("/echo", post(echo))
         .route("/upload/image", put(upload_image))
+        .route("/upload", put(upload))
         .fallback(handler_404);
 
     // run our app with hyper, listening globally on port 3000
@@ -337,6 +347,16 @@ pub async fn upload(mut multipart: Multipart) -> impl IntoResponse {
     )
 }
 */
+
+async fn upload(mut multipart: Multipart) -> impl IntoResponse {
+    while let Some(mut field) = multipart.next_field().await.unwrap() {
+        let name = field.name().unwrap().to_string();
+        let data = field.bytes().await.unwrap();
+
+        println!("Length of `{}` is {} bytes", name, data.len());
+    }
+    (StatusCode::OK, "OK".to_owned())
+}
 
 /// Verifies a JWT token using the server's JWT secret. Will trim `Bearer` from any bearer token strings automatically.
 /// Returns true if the token is valid.
