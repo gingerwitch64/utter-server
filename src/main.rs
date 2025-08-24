@@ -1,6 +1,6 @@
 //use std::fs::{File, *};
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 use std::{fs, fs::File};
@@ -11,7 +11,7 @@ use argon2::{
 };
 use axum::{
     body::{Body, Bytes},
-    extract::{Multipart, Query},
+    extract::{DefaultBodyLimit, Query},
     http::{
         header::{HeaderMap, AUTHORIZATION, CONTENT_TYPE},
         StatusCode,
@@ -80,7 +80,9 @@ async fn main() {
         .route("/users", post(create_user))
         .route("/login", post(generate_token))
         .route("/echo", post(echo))
+        .route("/image/{*key}", get(serve_image))
         .route("/upload/image", put(upload_image))
+        .layer(DefaultBodyLimit::max(config::MAX_UPLOAD_SIZE))
         .fallback(handler_404);
 
     // run our app with hyper, listening globally on port 3000
@@ -266,6 +268,7 @@ async fn upload_image(headers: HeaderMap, body: Bytes) -> impl IntoResponse {
             return (StatusCode::UNAUTHORIZED, "Token is invalid.".to_string());
         }
     }
+    // the following if statement is technically uneeded
     if body.len() > config::MAX_UPLOAD_SIZE {
         return (
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -283,7 +286,8 @@ async fn upload_image(headers: HeaderMap, body: Bytes) -> impl IntoResponse {
         .unwrap()
         .trim_start_matches("image/");
     let file_extension = match content_type_trim {
-        "apng" | "avif" | "gif" | "jpeg" | "jpg" | "png" | "webp" => content_type_trim,
+        "apng" | "avif" | "gif" | "png" | "webp" => content_type_trim,
+        "jpeg" | "jpg" => "jpg",
         "svg+xml" => "svg",
         _ => {
             return (
@@ -309,6 +313,56 @@ async fn upload_image(headers: HeaderMap, body: Bytes) -> impl IntoResponse {
     file.write_all(&body).unwrap();
 
     return (StatusCode::CREATED, format!(""));
+}
+
+async fn serve_image(
+    axum::extract::Path(path): axum::extract::Path<String>,
+) -> axum::response::Response {
+    let f_location = Path::new(config::UPLOAD_PATH)
+        .join("images")
+        .join(format!("{}", path));
+    if !f_location.is_file() {
+        return axum::response::Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+            .body(
+                format!("{} was not found on this server.", path)
+                    .try_into()
+                    .unwrap(),
+            )
+            .unwrap();
+    }
+    let mut body_image: Vec<u8> = Vec::new();
+    let f_loc_2 = f_location.clone();
+    let file_extension = f_loc_2.extension().unwrap().to_str().unwrap();
+    File::open(f_location).unwrap().read(&mut body_image);
+
+    let file_type = format!(
+        "image/{}",
+        match file_extension {
+            "apng" | "avif" | "gif" | "png" | "webp" => {
+                file_extension
+            }
+            "jpeg" | "jpg" => "jpeg",
+            "svg" => "svg+xml",
+            _ => {
+                return axum::response::Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+                    .body(
+                        format!("{} is not a valid image extension.", file_extension)
+                            .try_into()
+                            .unwrap(),
+                    )
+                    .unwrap();
+            }
+        }
+    );
+    return axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, file_type)
+        .body(body_image.try_into().unwrap())
+        .unwrap();
 }
 
 /*
