@@ -1,6 +1,5 @@
 //use std::fs::{File, *};
-use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 use std::{fs, fs::File};
@@ -9,14 +8,15 @@ use argon2::{
     password_hash::{Salt, SaltString},
     Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
 };
+use axum::body::Body;
 use axum::{
-    body::{Body, Bytes},
-    extract::{DefaultBodyLimit, Query},
+    body::Bytes,
+    extract::DefaultBodyLimit,
     http::{
         header::{HeaderMap, AUTHORIZATION, CONTENT_TYPE},
         StatusCode,
     },
-    response::{Html, IntoResponse},
+    response::IntoResponse,
     routing::{get, post, put},
     Json, Router,
 };
@@ -332,10 +332,14 @@ async fn serve_image(
             )
             .unwrap();
     }
-    let mut body_image: Vec<u8> = Vec::new();
+
     let f_loc_2 = f_location.clone();
     let file_extension = f_loc_2.extension().unwrap().to_str().unwrap();
-    File::open(f_location).unwrap().read(&mut body_image);
+    let file = std::fs::read(f_location).unwrap();
+    /*let _file_size = File::open(f_location)
+    .unwrap()
+    .read(&mut body_image)
+    .unwrap();*/
 
     let file_type = format!(
         "image/{}",
@@ -343,7 +347,7 @@ async fn serve_image(
             "apng" | "avif" | "gif" | "png" | "webp" => {
                 file_extension
             }
-            "jpeg" | "jpg" => "jpeg",
+            "jpeg" | "jpg" => "jpg",
             "svg" => "svg+xml",
             _ => {
                 return axum::response::Response::builder()
@@ -358,10 +362,12 @@ async fn serve_image(
             }
         }
     );
+    let body_final = Body::from(file);
     return axum::response::Response::builder()
         .status(StatusCode::OK)
         .header(CONTENT_TYPE, file_type)
-        .body(body_image.try_into().unwrap())
+        //.header(CONTENT_LENGTH, file_size)
+        .body(body_final)
         .unwrap();
 }
 
